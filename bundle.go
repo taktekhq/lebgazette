@@ -22,12 +22,62 @@ const (
 	mkEnd   = ""
 )
 
+var reHdrLine = regexp.MustCompile(`^[0-9٠-٩\s/\-ـ–.]{1,14}$`)
+
+// stripHeaderLines drops running-header lines that leaked into the top of a column
+// (the Gazette's name and issue line, the page number): only among its first lines.
+func stripHeaderLines(col string) string {
+	lines := strings.Split(col, "\n")
+	i := 0
+	for i < len(lines) && i < 3 {
+		ln := strings.TrimSpace(lines[i])
+		if ln == "" || strings.Contains(ln, "الجريدة الرسمية") || (strings.Contains(ln, "العدد") && reHdrDate.MatchString(westernDigits(ln))) || reHdrLine.MatchString(ln) {
+			i++
+			continue
+		}
+		break
+	}
+	return strings.Join(lines[i:], "\n")
+}
+
 func wordKey(w string) string { return strings.Join(normTokens(w), "") }
+
+var voteFold = strings.NewReplacer("ى", "ي", "ة", "ه", "ؤ", "و", "ئ", "ي")
+
+// voteKey folds a word further than wordKey, to forgive Tesseract's small slips.
+func voteKey(w string) string { return voteFold.Replace(wordKey(w)) }
+
+// voteSide returns 1 or 2 when Tesseract backs reading one or two of a disputed span
+// (a strictly larger share of its words appear in Tesseract's text, and at least 60%),
+// 0 when it does not decide. Words are never written here: the winner is one of the
+// two readings, as printed by that reader.
+func voteSide(ra, rb []string, tess map[string]bool) int {
+	score := func(r []string) float64 {
+		if len(r) == 0 {
+			return -1
+		}
+		in := 0
+		for _, w := range r {
+			if tess[voteKey(w)] {
+				in++
+			}
+		}
+		return float64(in) / float64(len(r))
+	}
+	sa, sb := score(ra), score(rb)
+	switch {
+	case sa >= 0.6 && sa > sb:
+		return 1
+	case sb >= 0.6 && sb > sa:
+		return 2
+	}
+	return 0
+}
 
 // mergeReaders aligns two readings word by word. Where they agree the word is
 // published as printed by reader 1; where they differ both readings are kept in a
 // marked span for a person (or the page image) to settle. Nothing is rewritten.
-func mergeReaders(g1, g2 string) (marked string, flagged int, words int, matched int) {
+func mergeReaders(g1, g2, tess string) (marked string, flagged int, words int, matched int, settled int) {
 	type w struct {
 		s  string
 		nl bool // reader 1 ended a line here
@@ -40,6 +90,10 @@ func mergeReaders(g1, g2 string) (marked string, flagged int, words int, matched
 		}
 	}
 	b := strings.Fields(g2)
+	tessSet := map[string]bool{}
+	for _, x := range strings.Fields(tess) {
+		tessSet[voteKey(x)] = true
+	}
 	n, m := len(a), len(b)
 	ka := make([]string, n)
 	kb := make([]string, m)
@@ -94,15 +148,29 @@ func mergeReaders(g1, g2 string) (marked string, flagged int, words int, matched
 				j++
 			}
 		}
-		flagged++
-		sb.WriteString(mkStart + strings.Join(ra, " ") + mkSep + strings.Join(rb, " ") + mkEnd)
+		// settle by majority: Tesseract backs one Gemini reading (folded comparison)
+		switch voteSide(ra, rb, tessSet) {
+		case 1:
+			settled++
+			if len(ra) > 0 {
+				sb.WriteString(strings.Join(ra, " "))
+			}
+		case 2:
+			settled++
+			if len(rb) > 0 {
+				sb.WriteString(strings.Join(rb, " "))
+			}
+		default:
+			flagged++
+			sb.WriteString(mkStart + strings.Join(ra, " ") + mkSep + strings.Join(rb, " ") + mkEnd)
+		}
 		if nl {
 			sb.WriteString("\n")
 		} else {
 			sb.WriteString(" ")
 		}
 	}
-	return strings.TrimSpace(sb.String()), flagged, n, matched
+	return strings.TrimSpace(sb.String()), flagged, n, matched, settled
 }
 
 var (
@@ -253,6 +321,7 @@ type bundleMeta struct {
 	PCMURL     string  `json:"pcm_url"`
 	Words      int     `json:"words"`
 	Flagged    int     `json:"flagged_spans"`
+	Settled    int     `json:"settled_spans"`
 	Agreement  float64 `json:"agreement"`
 	Status     string  `json:"status"`
 }
@@ -286,10 +355,22 @@ func (a *app) pcmIndex() map[string][3]string {
 	return out
 }
 
+// bundleVersion changes whenever the merge or the metadata rules change, so every text is rewritten.
+const bundleVersion = "2026-10-16c majority-vote, pcm issue dates, header lines stripped\n"
+
 func (a *app) saderBundle(outDir string, ys []int, types map[string]bool, dpi int) error {
+	force := false
 	pcm := a.pcmIndex()
 	rows := a.readSader()
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	os.MkdirAll(outDir, 0o755)
+	if err := copyFile(filepath.Join(a.data, "index", "issues.tsv"), filepath.Join(outDir, "issues.tsv")); err != nil {
+		fmt.Fprintf(os.Stderr, "bundle: issues.tsv not copied: %v\n", err)
+	}
+	if v, _ := os.ReadFile(filepath.Join(outDir, ".version")); string(v) != bundleVersion {
+		os.WriteFile(filepath.Join(outDir, ".version"), []byte(bundleVersion), 0o644) // a new merge rule: rebuild every text
+		force = true
+	}
 	n := 0
 	for _, r := range rows {
 		yi, _ := strconv.Atoi(r.Year)
@@ -300,7 +381,7 @@ func (a *app) saderBundle(outDir string, ys []int, types map[string]bool, dpi in
 		if !fileExists(filepath.Join(src, "done")) {
 			continue
 		}
-		if bundleFresh(src, filepath.Join(outDir, fmt.Sprint(r.ID))) {
+		if !force && bundleFresh(src, filepath.Join(outDir, fmt.Sprint(r.ID))) {
 			n++
 			continue
 		}
@@ -320,7 +401,7 @@ func (a *app) bundleOne(r SaderRow, src, out string, pcm map[string][3]string, d
 	}
 	pdf := filepath.Join(a.data, "raw", "sader", "pdf", fmt.Sprintf("%d.pdf", r.ID))
 	var bt bundleText
-	var words, matched, flagged, npages int
+	var words, matched, flagged, settled, npages int
 	g1s, _ := filepath.Glob(filepath.Join(src, "p*.c*.gemini.txt"))
 	sort.Strings(g1s)
 	pageCols := map[int][]string{}
@@ -332,11 +413,13 @@ func (a *app) bundleOne(r SaderRow, src, out string, pcm map[string][3]string, d
 		var marked string
 		if err != nil {
 			// no second reader for this column: nothing is confirmed, show it whole as one flagged span
-			marked, words = mkStart+strings.TrimSpace(string(g1))+mkSep+mkEnd, words+len(strings.Fields(string(g1)))
+			g1s := stripHeaderLines(string(g1))
+			marked, words = mkStart+strings.TrimSpace(g1s)+mkSep+mkEnd, words+len(strings.Fields(g1s))
 			flagged++
 		} else {
-			m, f, w, mt := mergeReaders(string(g1), string(g2))
-			marked, flagged, words, matched = m, flagged+f, words+w, matched+mt
+			ts, _ := os.ReadFile(base + ".tess.txt")
+			m, f, w, mt, st := mergeReaders(stripHeaderLines(string(g1)), stripHeaderLines(string(g2)), stripHeaderLines(string(ts)))
+			marked, flagged, words, matched, settled = m, flagged+f, words+w, matched+mt, settled+st
 		}
 		pageCols[pn] = append(pageCols[pn], marked)
 		if pn > npages {
@@ -365,9 +448,14 @@ func (a *app) bundleOne(r SaderRow, src, out string, pcm map[string][3]string, d
 	yi, _ := strconv.Atoi(r.Year)
 	meta := bundleMeta{ID: r.ID, Source: "saderlex", SourceName: "SaderLex", SourceURL: fmt.Sprintf("%s/gazette/pdf/%d", saderBase, r.ID),
 		Kind: r.Kind, Number: r.Number, Date: r.Date, Year: yi, Title: r.Title, Group: r.Group, Pages: npages,
-		Issue: hdr.Issue, IssueDate: hdr.Date, PageFrom: hdr.Page, PageTo: hdrLast.Page, Words: words, Flagged: flagged, Status: "official-scan"}
+		Issue: hdr.Issue, IssueDate: hdr.Date, PageFrom: hdr.Page, PageTo: hdrLast.Page, Words: words, Flagged: flagged, Settled: settled, Status: "official-scan"}
 	if words > 0 {
 		meta.Agreement = float64(matched) / float64(words)
+	}
+	// the issue number is read from the header; its date comes from PCM's list of issues, never from OCR
+	meta.IssueDate = ""
+	if d := a.pcmIssueDate(meta.Issue, yi, r.Date); d != "" {
+		meta.IssueDate = d
 	}
 	kind1 := strings.Fields(r.Kind + " ")[0]
 	if v, ok := pcm[kind1+"|"+r.Number+"|"+r.Year]; ok {
@@ -430,4 +518,22 @@ func bundleFresh(src, out string) bool {
 		return false
 	}
 	return true
+}
+
+// pcmIssueDate finds the date of issue `number` in index/issues.tsv: the issue of the
+// text's own year (or the next) dated on or after the text itself.
+func (a *app) pcmIssueDate(number string, year int, textDate string) string {
+	if number == "" {
+		return ""
+	}
+	best := ""
+	for _, is := range a.readIssues() {
+		if is.Number != number || (is.Year != year && is.Year != year+1) || is.Date < textDate {
+			continue
+		}
+		if best == "" || is.Date < best {
+			best = is.Date
+		}
+	}
+	return best
 }

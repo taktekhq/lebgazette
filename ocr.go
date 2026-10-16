@@ -241,22 +241,44 @@ func ocrPilot(pages []string, outDir, model string) error {
 func headerBand(src image.Image) (y0, y1 int) {
 	b := src.Bounds()
 	W, H := b.Dx(), b.Dy()
+	// scans differ in paper tone: dark means clearly below the paper level
+	var hist [256]int
+	for y := 0; y < H; y += 8 {
+		for x := 0; x < W; x += 8 {
+			r, g, bl, _ := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			hist[(r+g+bl)/3/0x101]++
+		}
+	}
+	total, acc, paper := 0, 0, 255
+	for _, c := range hist {
+		total += c
+	}
+	for v := 0; v < 256; v++ {
+		if acc += hist[v]; acc*2 >= total {
+			paper = v
+			break
+		}
+	}
+	thr := uint32(paper) * 0x101 * 70 / 100
 	y0, y1 = 0, H*34/934
 	first := -1
 	for y := 0; y < H*22/100; y++ {
 		n := 0
 		for x := 0; x < W; x += 2 {
 			r, g, bl, _ := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			if (r+g+bl)/3 < 0x8000 {
+			if (r+g+bl)/3 < thr {
 				n++
 			}
 		}
 		if first < 0 && n > 3 {
 			first = y
 		}
-		if first >= 0 && y > first+8 && n*2 > W*45/100 { // dark over about 45% of the width: the rule
+		if first >= 0 && y > first+8 && n*2 > W*35/100 { // dark over about a third of the width: the rule under the header
 			return max(first-4, 0), y + 4
 		}
+	}
+	if first >= 0 { // no rule found: a band around the first line of ink
+		return max(first-4, 0), first + H*45/1000
 	}
 	return y0, y1
 }
