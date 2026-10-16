@@ -29,12 +29,17 @@ func (a *app) saderOCR(ys []int, types map[string]bool, workers, limit int, mode
 		return saderRank(rows[i].Type) < saderRank(rows[j].Type)
 	})
 	var jobs []SaderRow
+	skipped := 0
 	for _, r := range rows {
 		yi, _ := strconv.Atoi(r.Year)
 		if !want(ys, yi) || (len(types) > 0 && !types[r.Type]) {
 			continue
 		}
 		if !fileExists(filepath.Join(a.data, "raw", "sader", "pdf", fmt.Sprintf("%d.pdf", r.ID))) {
+			continue
+		}
+		if r.Number != "" && a.heldElsewhere[skipKey(r.Kind, r.Number, r.Year)] {
+			skipped++
 			continue
 		}
 		if fileExists(filepath.Join(a.data, "ocr", "sader", fmt.Sprint(r.ID), "done")) {
@@ -71,7 +76,7 @@ func (a *app) saderOCR(ys []int, types map[string]bool, workers, limit int, mode
 	if limit > 0 && len(jobs) > limit {
 		jobs = jobs[:limit]
 	}
-	fmt.Fprintf(os.Stderr, "sader-ocr: %d texts to read, %d workers\n", len(jobs), workers)
+	fmt.Fprintf(os.Stderr, "sader-ocr: %d texts to read, %d held elsewhere and skipped, %d workers\n", len(jobs), skipped, workers)
 	var mu sync.Mutex
 	var sumA float64
 	var n, failed int
@@ -387,4 +392,32 @@ func tagOf(model string) string {
 		}
 		return '_'
 	}, model)
+}
+
+func skipKey(kind, number, year string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "قانون نافذ حكما" {
+		kind = "قانون"
+	}
+	return kind + "|" + strings.TrimSpace(number) + "|" + strings.TrimSpace(year)
+}
+
+// loadSkip reads a TSV of kind, number, year (no header).
+func loadSkip(path string) map[string]bool {
+	if path == "" {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "skip file:", err)
+		return nil
+	}
+	m := map[string]bool{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		f := strings.Split(ln, "\t")
+		if len(f) >= 3 {
+			m[skipKey(f[0], f[1], f[2])] = true
+		}
+	}
+	return m
 }

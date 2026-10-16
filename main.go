@@ -25,13 +25,14 @@ const _ = 0
 const defaultUA = "Mozilla/5.0 (X11; Linux x86_64) lebgazette/0.1 (+https://github.com/taktekhq/lebgazette)"
 
 type app struct {
-	f       *Fetcher
-	base    string
-	data    string
-	part2   bool
-	maxSpan int
-	model2  string
-	kinds   []string
+	f             *Fetcher
+	base          string
+	data          string
+	part2         bool
+	maxSpan       int
+	model2        string
+	heldElsewhere map[string]bool // kind|number|year of texts already held elsewhere (UL)
+	kinds         []string
 }
 
 func main() {
@@ -62,6 +63,7 @@ func main() {
 	out := fs.String("out", "bundle", "sader-bundle: output directory")
 	dpi := fs.Int("dpi", 120, "sader-bundle: resolution of the page images")
 	ids := fs.String("ids", "", "sader-ocr: read these SaderLex ids first, in this order; the rest follow from shortest to longest")
+	skipF := fs.String("skip", "", "sader-ocr: TSV (kind, number, year) of texts to leave out, e.g. what the Lebanese University already has")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
@@ -94,6 +96,7 @@ func main() {
 				ts[t] = true
 			}
 		}
+		a.heldElsewhere = loadSkip(*skipF)
 		err = a.saderOCR(ys, ts, *workers, *limit, *model, *model2, *ids)
 	case "mizan":
 		err = a.mizan(*ua, *gap, *minDate, *dailyCap)
