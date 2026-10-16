@@ -260,7 +260,7 @@ func readAdaptive(path, model string, depth int) (string, error) {
 	if src.Bounds().Dy() < 300 || depth >= 5 {
 		return "⟪؟ " + model + "⟫", nil
 	}
-	parts, err := sliceAt(path, src.Bounds().Dy()/2, false)
+	parts, err := sliceAt(path, src.Bounds().Dy()/2, false, tagOf(model))
 	if err != nil {
 		return "", err
 	}
@@ -287,11 +287,11 @@ func readAdaptive(path, model string, depth int) (string, error) {
 // sliceCrop cuts a column image into slices of about maxW-wide-proportional height,
 // always at a blank row between lines, so no line is split.
 func sliceCrop(path string, targetH int) ([]string, error) {
-	return sliceAt(path, targetH, true)
+	return sliceAt(path, targetH, true, "")
 }
 
 // sliceAt is sliceCrop with the target in pixels when scaled is false.
-func sliceAt(path string, targetH int, scaled bool) ([]string, error) {
+func sliceAt(path string, targetH int, scaled bool, tag string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -340,7 +340,7 @@ func sliceAt(path string, targetH int, scaled bool) ([]string, error) {
 		if err := png.Encode(&buf, dst); err != nil {
 			return nil, err
 		}
-		p := strings.TrimSuffix(path, ".png") + fmt.Sprintf(".s%02d.png", i+1)
+		p := strings.TrimSuffix(path, ".png") + fmt.Sprintf("%s.s%02d.png", tag, i+1)
 		if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
 			return nil, err
 		}
@@ -373,4 +373,18 @@ func blankImage(path string) bool {
 		}
 	}
 	return tot > 0 && n*1000 < tot*3
+}
+
+// tagOf makes a model name safe for a file name, so two readers halving the same
+// image never write (or delete) each other's slices.
+func tagOf(model string) string {
+	if model == "" {
+		return ""
+	}
+	return "." + strings.Map(func(r rune) rune {
+		if r == '-' || r == '.' || r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, model)
 }
