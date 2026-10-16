@@ -28,6 +28,7 @@ type app struct {
 	data    string
 	part2   bool
 	maxSpan int
+	kinds   []string
 }
 
 func main() {
@@ -43,9 +44,15 @@ func main() {
 	years := fs.String("years", "", "comma list of years (default: all found)")
 	part2 := fs.Bool("part2", false, "also fetch Part Two (court notices, trademarks...) texts")
 	maxSpan := fs.Int("maxspan", 120, "skip images of a text whose viewer page range is longer than this (the site has typos like 4219-4920); they are listed in index as suspect")
+	kinds := fs.String("kinds", "", "only texts whose title starts with one of these words, e.g. قانون,مرسوم (default: all)")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
+	for _, k := range strings.Split(*kinds, ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			a.kinds = append(a.kinds, k)
+		}
+	}
 	ys := parseYears(*years)
 	var err error
 	switch cmd {
@@ -211,6 +218,20 @@ func (a *app) skip(key string) bool {
 	return !a.part2 && strings.Contains("/"+key, "/part2/")
 }
 
+// keep applies -kinds to a title ("إعادة نشر" re-publications count as their kind).
+func (a *app) keep(title string) bool {
+	if len(a.kinds) == 0 {
+		return true
+	}
+	t := strings.TrimSpace(strings.TrimPrefix(title, "إعادة نشر"))
+	for _, k := range a.kinds {
+		if strings.HasPrefix(t, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // texts fetches each issue page, then each text's viewer page.
 func (a *app) texts(ys []int, limit int) error {
 	return a.eachIssue(ys, func(is Issue) error {
@@ -220,7 +241,7 @@ func (a *app) texts(ys []int, limit int) error {
 		}
 		for _, t := range parseContents(ib) {
 			key, ok := textKey(t.URL)
-			if !ok || a.skip(key) {
+			if !ok || a.skip(key) || !a.keep(t.Title) {
 				continue
 			}
 			if _, err := a.f.Get(t.URL, "text/"+key); err != nil && err != errNotFound {
@@ -257,7 +278,7 @@ func (a *app) images(ys []int, limit int) error {
 		}
 		for _, t := range parseContents(ib) {
 			key, ok := textKey(t.URL)
-			if !ok || a.skip(key) {
+			if !ok || a.skip(key) || !a.keep(t.Title) {
 				continue
 			}
 			vb, err := a.f.Get(t.URL, "text/"+key)
@@ -355,7 +376,7 @@ func (a *app) status(ys []int) error {
 		s.fetchedIssues++
 		for _, t := range parseContents(ib) {
 			key, ok := textKey(t.URL)
-			if !ok || a.skip(key) {
+			if !ok || a.skip(key) || !a.keep(t.Title) {
 				continue
 			}
 			s.texts++
