@@ -64,7 +64,8 @@ func geminiRead(files []string, model string) (map[string]string, float64, error
 	}
 	for _, n := range names {
 		if refusal(res[n]) {
-			return nil, 0, fmt.Errorf("no usable reading for %s", n)
+			os.WriteFile(filepath.Join(dir, "fail-"+strings.TrimSuffix(n, ".png")+".raw.txt"), []byte(out), 0o644)
+			return nil, 0, fmt.Errorf("no usable reading for %s (raw output kept, %d bytes)", n, len(out))
 		}
 	}
 	return res, time.Since(t0).Seconds(), nil
