@@ -74,6 +74,11 @@ func main() {
 		err = a.index()
 	case "watch":
 		err = watchRun(*data, *ua, *gap, *sources, *judge, *notify, *maxFetch, *notifyFirst)
+	case "pdf-read":
+		if fs.NArg() < 1 {
+			usage()
+		}
+		err = pdfRead(*data, fs.Arg(0), *model, *limit)
 	case "ocr-pilot":
 		err = ocrPilot(fs.Args(), filepath.Join(*data, "ocr-pilot"), *model)
 	case "status":
