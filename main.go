@@ -45,6 +45,7 @@ func main() {
 	part2 := fs.Bool("part2", false, "also fetch Part Two (court notices, trademarks...) texts")
 	maxSpan := fs.Int("maxspan", 120, "skip images of a text whose viewer page range is longer than this (the site has typos like 4219-4920); they are listed in index as suspect")
 	kinds := fs.String("kinds", "", "only texts whose title starts with one of these words, e.g. قانون,مرسوم (default: all)")
+	model := fs.String("model", "sonnet", "vision model for ocr-pilot")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
@@ -64,6 +65,8 @@ func main() {
 		err = a.images(ys, *limit)
 	case "index":
 		err = a.index()
+	case "ocr-pilot":
+		err = ocrPilot(fs.Args(), filepath.Join(*data, "ocr-pilot"), *model)
 	case "status":
 		err = a.status(ys)
 	default:
