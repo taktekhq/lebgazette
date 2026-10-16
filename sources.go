@@ -167,6 +167,8 @@ func (w *watcher) srcSitemap(src, sitemap string) {
 var gnewsQueries = []string{`"الجريدة الرسمية" لبنان`, `"صدر في الجريدة الرسمية"`, `"نص القانون"`, `"نص المرسوم"`, `"ينفرد بنشر"`}
 
 // hands-only: outlets behind Cloudflare challenges. Alert text says so; never fetched from here.
+var reForeign = regexp.MustCompile(`مصر|الجزائر|تونس|المغرب|الأردن|السعودية|الإمارات|العراق|سوريا|فلسطين|الكويت|ليبيا|قطر|عمان|Algeria|Egypt|Tunisia|Morocco`)
+
 var byHandOutlets = []string{"ليبانون ديبايت", "النشرة", "ليبانون فايلز", "Lebanon Debate", "Elnashra", "Lebanon Files"}
 
 // 5. Google News RSS: alerts only.
@@ -186,6 +188,9 @@ func (w *watcher) srcGNews() {
 		}
 		for _, it := range f.Items {
 			t := clean(it.Title)
+			if reForeign.MatchString(t) && !strings.Contains(t, "لبنان") {
+				continue // a foreign law or gazette, not ours
+			}
 			for _, o := range byHandOutlets {
 				if strings.Contains(it.Source, o) || strings.Contains(t, o) {
 					t += " (open by hand: Cloudflare)"
