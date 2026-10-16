@@ -51,12 +51,13 @@ type watcher struct {
 	errs     []string
 	maxFetch int
 	judge    string
+	model    string
 	pcmBlock string // the crawler's BLOCKED file
 }
 
 func newWatcher(data, ua string, gap time.Duration, judge string, maxFetch int) *watcher {
 	w := &watcher{data: data, ua: ua, gap: gap, last: map[string]time.Time{}, known: map[string]bool{},
-		client: &http.Client{Timeout: 60 * time.Second}, judge: judge, maxFetch: maxFetch,
+		client: &http.Client{Timeout: 60 * time.Second}, judge: judge, model: defaultGemini, maxFetch: maxFetch,
 		pcmBlock: filepath.Join(data, "BLOCKED")}
 	os.MkdirAll(w.p("stop"), 0o755)
 	os.MkdirAll(w.p("pdf"), 0o755)

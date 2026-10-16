@@ -2,17 +2,16 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
-	"image/gif"
+	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"golang.org/x/image/draw"
 )
@@ -40,17 +39,22 @@ func refusal(s string) bool {
 // the running header, upscales 2x into RGB PNGs (a grayscale PNG made
 // tesseract return nothing) and returns their paths.
 func crops(gifPath, workDir, tag string) ([]string, error) {
-	f, err := os.Open(gifPath)
+	return cropsScale(gifPath, workDir, tag, 2)
+}
+
+// cropsScale is crops with a chosen upscale (1 for already high-resolution scans).
+func cropsScale(imgPath, workDir, tag string, scale int) ([]string, error) {
+	f, err := os.Open(imgPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	src, err := gif.Decode(f)
+	src, _, err := image.Decode(f)
 	if err != nil {
 		return nil, err
 	}
 	b := src.Bounds()
-	const top = 34 // running header: "الجريدة الرسمية - العدد N - date" and the page number
+	top := b.Dy() * 34 / 934 // running header: "الجريدة الرسمية - العدد N - date" and the page number
 	dark := func(x, y int) bool {
 		r, g, bl, _ := src.At(x, y).RGBA()
 		return (r+g+bl)/3 < 0x8000
@@ -103,7 +107,7 @@ func crops(gifPath, workDir, tag string) ([]string, error) {
 	}
 	var paths []string
 	for i, r := range rects {
-		dst := image.NewRGBA(image.Rect(0, 0, r.Dx()*2, r.Dy()*2))
+		dst := image.NewRGBA(image.Rect(0, 0, r.Dx()*scale, r.Dy()*scale))
 		draw.Draw(dst, dst.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 		draw.CatmullRom.Scale(dst, dst.Bounds(), src, r, draw.Over, nil)
 		var buf bytes.Buffer
@@ -128,33 +132,6 @@ type visionResult struct {
 	Text string
 	Cost float64
 	Secs float64
-}
-
-func visionRead(gifPath, model string) (visionResult, error) {
-	t0 := time.Now()
-	dir := filepath.Dir(gifPath)
-	cmd := exec.Command("claude", "-p", fmt.Sprintf(visionPrompt, filepath.Base(gifPath)),
-		"--model", model, "--no-session-persistence", "--tools", "Read",
-		"--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`,
-		"--disable-slash-commands", "--setting-sources", "",
-		"--system-prompt", "You transcribe page images exactly.", "--output-format", "json")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return visionResult{}, err
-	}
-	var j struct {
-		Result  string  `json:"result"`
-		Cost    float64 `json:"total_cost_usd"`
-		IsError bool    `json:"is_error"`
-	}
-	if err := json.Unmarshal(out, &j); err != nil {
-		return visionResult{}, err
-	}
-	if j.IsError || strings.TrimSpace(j.Result) == "" {
-		return visionResult{}, fmt.Errorf("vision call failed: %.200s", j.Result)
-	}
-	return visionResult{j.Result, j.Cost, time.Since(t0).Seconds()}, nil
 }
 
 // normTokens splits into words for comparison only (the stored readings stay

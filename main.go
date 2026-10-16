@@ -30,6 +30,7 @@ type app struct {
 	data    string
 	part2   bool
 	maxSpan int
+	model2  string
 	kinds   []string
 }
 
@@ -47,12 +48,15 @@ func main() {
 	part2 := fs.Bool("part2", false, "also fetch Part Two (court notices, trademarks...) texts")
 	maxSpan := fs.Int("maxspan", 120, "skip images of a text whose viewer page range is longer than this (the site has typos like 4219-4920); they are listed in index as suspect")
 	kinds := fs.String("kinds", "", "only texts whose title starts with one of these words, e.g. قانون,مرسوم (default: all)")
-	model := fs.String("model", "sonnet", "vision model for ocr-pilot")
+	model := fs.String("model", defaultGemini, "Gemini model (via agy) for page reading and judging")
 	sources := fs.String("sources", "", "watch: comma list of cc,labor,ppa,legalagenda,lbci,lebanon24,aljadeed,gnews,pcm (default all)")
-	judge := fs.String("judge", "claude", "watch: claude (judge PDFs with claude -p) or none")
+	judge := fs.String("judge", "gemini", "watch: gemini (judge PDFs with agy) or none")
 	notify := fs.String("notify", "", "watch: shell command that receives the message on stdin (e.g. a Slack DM)")
 	notifyFirst := fs.Bool("notify-first", false, "watch: notify even on the first (baseline) run")
 	maxFetch := fs.Int("max-new", 60, "watch: most new PDFs or articles taken per source per run")
+	types := fs.String("types", "", "sader-ocr: only these types, e.g. قوانين,مراسيم")
+	workers := fs.Int("workers", 6, "sader-ocr: texts read in parallel (agy image jobs: keep at most 6-8)")
+	model2 := fs.String("model2", "", "sader-ocr: second Gemini model as another reader (e.g. gemini-4-argon-medium)")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
@@ -72,6 +76,20 @@ func main() {
 		err = a.images(ys, *limit)
 	case "index":
 		err = a.index()
+	case "sader-tree":
+		err = a.saderTree(newSaderFetcher(*ua, max(*gap, 3*time.Second), *data), ys)
+	case "sader-pdfs":
+		sf := newSaderFetcher(*ua, max(*gap, 3*time.Second), *data)
+		err = a.saderPDFs(sf, ys, *limit)
+		a.f = sf
+	case "sader-ocr":
+		ts := map[string]bool{}
+		for _, t := range strings.Split(*types, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				ts[t] = true
+			}
+		}
+		err = a.saderOCR(ys, ts, *workers, *limit, *model, *model2)
 	case "watch":
 		err = watchRun(*data, *ua, *gap, *sources, *judge, *notify, *maxFetch, *notifyFirst)
 	case "pdf-read":

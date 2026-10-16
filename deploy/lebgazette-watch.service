@@ -8,5 +8,5 @@ WorkingDirectory=%h/taktekhq/lebgazette-data
 EnvironmentFile=-%h/.config/lebgazette/env
 ExecStart=%h/taktekhq/lebgazette/lebgazette watch -data %h/taktekhq/lebgazette-data -judge ${LEBGAZETTE_JUDGE}
 ExecStartPost=%h/taktekhq/lebgazette/deploy/watch-sync.sh %h/taktekhq/lebgazette-data
-Environment=LEBGAZETTE_JUDGE=claude
+Environment=LEBGAZETTE_JUDGE=gemini
 TimeoutStartSec=3000

@@ -21,6 +21,7 @@ var errNotFound = errors.New("404 not found")
 // an honest User-Agent, and no retries after a block.
 type Fetcher struct {
 	UA      string
+	Referer string
 	Gap     time.Duration
 	Data    string
 	client  *http.Client
@@ -46,8 +47,9 @@ func (f *Fetcher) Get(url, rel string) ([]byte, error) {
 	if f.Have(rel) {
 		return os.ReadFile(f.path(rel))
 	}
-	if blocked, _ := os.ReadFile(filepath.Join(f.Data, "BLOCKED")); len(blocked) > 0 {
-		return nil, fmt.Errorf("%w: see %s/BLOCKED", ErrBlocked, f.Data)
+	bf := blockFile(url)
+	if blocked, _ := os.ReadFile(filepath.Join(f.Data, bf)); len(blocked) > 0 {
+		return nil, fmt.Errorf("%w: see %s/%s", ErrBlocked, f.Data, bf)
 	}
 	if d := f.Gap - time.Since(f.last); d > 0 {
 		time.Sleep(d)
@@ -69,7 +71,7 @@ func (f *Fetcher) Get(url, rel string) ([]byte, error) {
 	if err != nil {
 		if errors.Is(err, ErrBlocked) {
 			msg := fmt.Sprintf("%s\n%s\n%v\n", time.Now().UTC().Format(time.RFC3339), url, err)
-			os.WriteFile(filepath.Join(f.Data, "BLOCKED"), []byte(msg), 0o644)
+			os.WriteFile(filepath.Join(f.Data, bf), []byte(msg), 0o644)
 		}
 		return nil, err
 	}
@@ -84,9 +86,26 @@ func (f *Fetcher) Get(url, rel string) ([]byte, error) {
 	return body, os.Rename(p+".part", p)
 }
 
+// blockFile is the per-host stop file: BLOCKED for pcm.gov.lb (the original name),
+// BLOCKED-<host> for any other host, so one blocked host never stops another.
+func blockFile(rawURL string) string {
+	h := rawURL
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	h = strings.SplitN(h, "/", 2)[0]
+	if strings.HasSuffix(h, "pcm.gov.lb") {
+		return "BLOCKED"
+	}
+	return "BLOCKED-" + h
+}
+
 func (f *Fetcher) once(url string) ([]byte, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("User-Agent", f.UA)
+	if f.Referer != "" {
+		req.Header.Set("Referer", f.Referer)
+	}
 	req.Header.Set("Accept-Language", "ar,en;q=0.8")
 	resp, err := f.client.Do(req)
 	if err != nil {
