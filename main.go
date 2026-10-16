@@ -61,6 +61,7 @@ func main() {
 	dailyCap := fs.Int("daily-cap", 300, "mizan: most requests per day")
 	out := fs.String("out", "bundle", "sader-bundle: output directory")
 	dpi := fs.Int("dpi", 120, "sader-bundle: resolution of the page images")
+	ids := fs.String("ids", "", "sader-ocr: read these SaderLex ids first, in this order; the rest follow from shortest to longest")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
@@ -93,7 +94,7 @@ func main() {
 				ts[t] = true
 			}
 		}
-		err = a.saderOCR(ys, ts, *workers, *limit, *model, *model2)
+		err = a.saderOCR(ys, ts, *workers, *limit, *model, *model2, *ids)
 	case "mizan":
 		err = a.mizan(*ua, *gap, *minDate, *dailyCap)
 	case "sader-headers":

@@ -19,7 +19,7 @@ import (
 // saderOCR reads SaderLex page scans: render at 300 dpi, split into columns,
 // reader 1 = Gemini (agy) on the column crops, reader 2 = Tesseract (ara) on the
 // same crops. Agreement is word by word; disagreements are for the page image to settle.
-func (a *app) saderOCR(ys []int, types map[string]bool, workers, limit int, model, model2 string) error {
+func (a *app) saderOCR(ys []int, types map[string]bool, workers, limit int, model, model2, idsCSV string) error {
 	a.model2 = model2
 	rows := a.readSader()
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -41,9 +41,35 @@ func (a *app) saderOCR(ys []int, types map[string]bool, workers, limit int, mode
 			continue
 		}
 		jobs = append(jobs, r)
-		if limit > 0 && len(jobs) >= limit {
-			break
+	}
+	// priority ids first (in the order given), then the rest from the shortest text to the longest
+	prio := map[int]int{}
+	for i, x := range strings.Split(idsCSV, ",") {
+		if v, err := strconv.Atoi(strings.TrimSpace(x)); err == nil {
+			prio[v] = i + 1
 		}
+	}
+	npages := map[int]int{}
+	for _, r := range jobs {
+		out, _ := exec.Command("pdfinfo", filepath.Join(a.data, "raw", "sader", "pdf", fmt.Sprintf("%d.pdf", r.ID))).Output()
+		for _, ln := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(ln, "Pages:") {
+				npages[r.ID], _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(ln, "Pages:")))
+			}
+		}
+	}
+	sort.SliceStable(jobs, func(i, j int) bool {
+		pi, pj := prio[jobs[i].ID], prio[jobs[j].ID]
+		if (pi > 0) != (pj > 0) {
+			return pi > 0
+		}
+		if pi > 0 {
+			return pi < pj
+		}
+		return npages[jobs[i].ID] < npages[jobs[j].ID]
+	})
+	if limit > 0 && len(jobs) > limit {
+		jobs = jobs[:limit]
 	}
 	fmt.Fprintf(os.Stderr, "sader-ocr: %d texts to read, %d workers\n", len(jobs), workers)
 	var mu sync.Mutex
@@ -201,48 +227,71 @@ func readColumns(all []string, model string) (map[string]string, error) {
 		return res, nil
 	}
 	for _, c := range cs {
-		slices, err := sliceCrop(c, 520)
+		txt, err := readAdaptive(c, model, 0)
 		if err != nil {
 			return nil, err
 		}
-		parts := make([]string, len(slices))
-		errs := make([]error, len(slices))
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, 4)
-		for i, sl := range slices {
-			wg.Add(1)
-			go func(i int, sl string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				if blankImage(sl) {
-					return
-				}
-				r, _, err := geminiRead([]string{sl}, model)
-				if err != nil {
-					errs[i] = err
-					return
-				}
-				parts[i] = r[filepath.Base(sl)]
-			}(i, sl)
-		}
-		wg.Wait()
-		for i := range errs {
-			if errs[i] != nil {
-				return nil, fmt.Errorf("slice %d of %s: %v", i+1, filepath.Base(c), errs[i])
-			}
-		}
-		res[filepath.Base(c)] = strings.Join(parts, "\n")
-		for _, sl := range slices {
-			os.Remove(sl)
-		}
+		res[filepath.Base(c)] = txt
 	}
 	return res, nil
+}
+
+// readAdaptive reads an image; if the model's output filter cuts it off (long,
+// well-known texts: conventions, loan agreements), the image is halved at a blank
+// row and each half read on its own, down to a few lines. A piece that still
+// cannot be read becomes a placeholder word that differs per model, so the two
+// readers disagree there and the page image settles it.
+func readAdaptive(path, model string, depth int) (string, error) {
+	if blankImage(path) {
+		return "", nil
+	}
+	if r, _, err := geminiRead([]string{path}, model); err == nil {
+		return r[filepath.Base(path)], nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	src, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		return "", err
+	}
+	if src.Bounds().Dy() < 300 || depth >= 5 {
+		return "⟪؟ " + model + "⟫", nil
+	}
+	parts, err := sliceAt(path, src.Bounds().Dy()/2, false)
+	if err != nil {
+		return "", err
+	}
+	out := make([]string, len(parts))
+	errs := make([]error, len(parts))
+	var wg sync.WaitGroup
+	for i, p := range parts {
+		wg.Add(1)
+		go func(i int, p string) {
+			defer wg.Done()
+			out[i], errs[i] = readAdaptive(p, model, depth+1)
+			os.Remove(p)
+		}(i, p)
+	}
+	wg.Wait()
+	for _, e := range errs {
+		if e != nil {
+			return "", e
+		}
+	}
+	return strings.Join(out, "\n"), nil
 }
 
 // sliceCrop cuts a column image into slices of about maxW-wide-proportional height,
 // always at a blank row between lines, so no line is split.
 func sliceCrop(path string, targetH int) ([]string, error) {
+	return sliceAt(path, targetH, true)
+}
+
+// sliceAt is sliceCrop with the target in pixels when scaled is false.
+func sliceAt(path string, targetH int, scaled bool) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -254,7 +303,9 @@ func sliceCrop(path string, targetH int) ([]string, error) {
 	}
 	b := src.Bounds()
 	W, H := b.Dx(), b.Dy()
-	targetH = targetH * W / 600 // keep the same line count per slice for any resolution
+	if scaled {
+		targetH = targetH * W / 600 // keep the same line count per slice for any resolution
+	}
 	ink := make([]int, H)
 	for y := 0; y < H; y++ {
 		for x := 0; x < W; x += 2 {

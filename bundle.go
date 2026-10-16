@@ -264,6 +264,8 @@ type bundleText struct {
 	} `json:"pages"`
 }
 
+var rePageName = regexp.MustCompile(`^page-(\d+)\.png$`)
+
 var rePCMKey = regexp.MustCompile(`^(?:إعادة نشر\s+)?(قانون|مرسوم|قرار)[^0-9]*رقم\s*([0-9]+)`)
 
 func (a *app) pcmIndex() map[string][3]string {
@@ -296,6 +298,10 @@ func (a *app) saderBundle(outDir string, ys []int, types map[string]bool, dpi in
 		}
 		src := filepath.Join(a.data, "ocr", "sader", fmt.Sprint(r.ID))
 		if !fileExists(filepath.Join(src, "done")) {
+			continue
+		}
+		if bundleFresh(src, filepath.Join(outDir, fmt.Sprint(r.ID))) {
+			n++
 			continue
 		}
 		if err := a.bundleOne(r, src, filepath.Join(outDir, fmt.Sprint(r.ID)), pcm, dpi); err != nil {
@@ -380,6 +386,17 @@ func (a *app) bundleOne(r SaderRow, src, out string, pcm map[string][3]string, d
 	if b, err := exec.Command("pdftoppm", "-r", strconv.Itoa(dpi), "-gray", "-png", pdf, filepath.Join(out, "page")).CombinedOutput(); err != nil {
 		return fmt.Errorf("pdftoppm: %v %s", err, b)
 	}
+	// pdftoppm pads page numbers (page-001.png); the site asks for page-1.png
+	ents, _ := os.ReadDir(out)
+	for _, e := range ents {
+		if m := rePageName.FindStringSubmatch(e.Name()); m != nil {
+			k, _ := strconv.Atoi(m[1])
+			want := fmt.Sprintf("page-%d.png", k)
+			if want != e.Name() {
+				os.Rename(filepath.Join(out, e.Name()), filepath.Join(out, want))
+			}
+		}
+	}
 	return nil
 }
 
@@ -396,4 +413,21 @@ func copyFile(src, dst string) error {
 	defer o.Close()
 	_, err = io.Copy(o, in)
 	return err
+}
+
+// bundleFresh: the bundle is newer than everything it was made from.
+func bundleFresh(src, out string) bool {
+	mi, err := os.Stat(filepath.Join(out, "meta.json"))
+	if err != nil {
+		return false
+	}
+	for _, f := range []string{"done", "hdr.txt"} {
+		if st, err := os.Stat(filepath.Join(src, f)); err == nil && st.ModTime().After(mi.ModTime()) {
+			return false
+		}
+	}
+	if pngs, _ := filepath.Glob(filepath.Join(out, "page-*.png")); len(pngs) == 0 {
+		return false
+	}
+	return true
 }
