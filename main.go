@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+const _ = 0
+
 const defaultUA = "Mozilla/5.0 (X11; Linux x86_64) lebgazette/0.1 (+https://github.com/taktekhq/lebgazette)"
 
 type app struct {
@@ -46,6 +48,11 @@ func main() {
 	maxSpan := fs.Int("maxspan", 120, "skip images of a text whose viewer page range is longer than this (the site has typos like 4219-4920); they are listed in index as suspect")
 	kinds := fs.String("kinds", "", "only texts whose title starts with one of these words, e.g. قانون,مرسوم (default: all)")
 	model := fs.String("model", "sonnet", "vision model for ocr-pilot")
+	sources := fs.String("sources", "", "watch: comma list of cc,labor,ppa,legalagenda,lbci,lebanon24,aljadeed,gnews,pcm (default all)")
+	judge := fs.String("judge", "claude", "watch: claude (judge PDFs with claude -p) or none")
+	notify := fs.String("notify", "", "watch: shell command that receives the message on stdin (e.g. a Slack DM)")
+	notifyFirst := fs.Bool("notify-first", false, "watch: notify even on the first (baseline) run")
+	maxFetch := fs.Int("max-new", 60, "watch: most new PDFs or articles taken per source per run")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
@@ -65,6 +72,8 @@ func main() {
 		err = a.images(ys, *limit)
 	case "index":
 		err = a.index()
+	case "watch":
+		err = watchRun(*data, *ua, *gap, *sources, *judge, *notify, *maxFetch, *notifyFirst)
 	case "ocr-pilot":
 		err = ocrPilot(fs.Args(), filepath.Join(*data, "ocr-pilot"), *model)
 	case "status":

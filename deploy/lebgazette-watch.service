@@ -1,0 +1,12 @@
+[Unit]
+Description=lebgazette watch: poll official PDF sources for new laws, decrees and rulings
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/taktekhq/lebgazette-data
+# Optional: its own env file (CLAUDE_CODE_OAUTH_TOKEN for the PDF judge, a notify hook); never ~/.profile.
+EnvironmentFile=-%h/.config/lebgazette/env
+ExecStart=%h/taktekhq/lebgazette/lebgazette watch -data %h/taktekhq/lebgazette-data -judge ${LEBGAZETTE_JUDGE}
+ExecStartPost=%h/taktekhq/lebgazette/deploy/watch-sync.sh %h/taktekhq/lebgazette-data
+Environment=LEBGAZETTE_JUDGE=claude
+TimeoutStartSec=3000

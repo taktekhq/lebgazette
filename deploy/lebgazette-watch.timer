@@ -1,0 +1,10 @@
+[Unit]
+Description=lebgazette watch every 2 h, 07:00 to 23:00 Beirut
+
+[Timer]
+OnCalendar=*-*-* 07,09,11,13,15,17,19,21,23:00:00 Asia/Beirut
+Persistent=false
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
