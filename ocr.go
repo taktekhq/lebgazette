@@ -54,7 +54,7 @@ func cropsScale(imgPath, workDir, tag string, scale int) ([]string, error) {
 		return nil, err
 	}
 	b := src.Bounds()
-	top := b.Dy() * 34 / 934 // running header: "الجريدة الرسمية - العدد N - date" and the page number
+	_, top := headerBand(src) // running header: "الجريدة الرسمية - العدد N - date" and the page number, down to its rule
 	dark := func(x, y int) bool {
 		r, g, bl, _ := src.At(x, y).RGBA()
 		return (r+g+bl)/3 < 0x8000
@@ -233,4 +233,30 @@ func ocrPilot(pages []string, outDir, model string) error {
 		fmt.Printf("TOTAL crops=%d single_column_pages=%d vision_failed=%d mean_agree=%.3f word_disagree=%.3f cost=$%.3f mean_secs=%.1f\n", done, singles, failed, sumAgree/float64(done), float64(sumDis)/float64(sumWords), totCost, totSecs/float64(done))
 	}
 	return nil
+}
+
+// headerBand finds the running header: from its first ink row to just under the
+// full-width rule below it. Scans of different sources have different margins, so
+// it is measured, not assumed; without a rule it falls back to the GIF layout (3.6%).
+func headerBand(src image.Image) (y0, y1 int) {
+	b := src.Bounds()
+	W, H := b.Dx(), b.Dy()
+	y0, y1 = 0, H*34/934
+	first := -1
+	for y := 0; y < H*22/100; y++ {
+		n := 0
+		for x := 0; x < W; x += 2 {
+			r, g, bl, _ := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			if (r+g+bl)/3 < 0x8000 {
+				n++
+			}
+		}
+		if first < 0 && n > 3 {
+			first = y
+		}
+		if first >= 0 && y > first+8 && n*2 > W*45/100 { // dark over about 45% of the width: the rule
+			return max(first-4, 0), y + 4
+		}
+	}
+	return y0, y1
 }

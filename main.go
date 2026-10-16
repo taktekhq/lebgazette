@@ -59,6 +59,8 @@ func main() {
 	model2 := fs.String("model2", "", "sader-ocr: second Gemini model as another reader (e.g. gemini-4-argon-medium)")
 	minDate := fs.String("min-date", "2026-10-01", "mizan: stop at items of issues older than this (YYYY-MM-DD)")
 	dailyCap := fs.Int("daily-cap", 300, "mizan: most requests per day")
+	out := fs.String("out", "bundle", "sader-bundle: output directory")
+	dpi := fs.Int("dpi", 120, "sader-bundle: resolution of the page images")
 	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
@@ -94,6 +96,10 @@ func main() {
 		err = a.saderOCR(ys, ts, *workers, *limit, *model, *model2)
 	case "mizan":
 		err = a.mizan(*ua, *gap, *minDate, *dailyCap)
+	case "sader-headers":
+		err = a.saderHeaders(ys, setOf(*types), *workers, *model)
+	case "sader-bundle":
+		err = a.saderBundle(*out, ys, setOf(*types), *dpi)
 	case "watch":
 		err = watchRun(*data, *ua, *gap, *sources, *judge, *notify, *maxFetch, *notifyFirst)
 	case "pdf-read":
@@ -447,4 +453,14 @@ func (a *app) status(ys []int) error {
 		fmt.Printf("%d %d %d %d %d %d %d\n", y, s.issues, s.fetchedIssues, s.texts, s.viewers, s.pages, s.pagesHave)
 	}
 	return nil
+}
+
+func setOf(csv string) map[string]bool {
+	m := map[string]bool{}
+	for _, t := range strings.Split(csv, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			m[t] = true
+		}
+	}
+	return m
 }

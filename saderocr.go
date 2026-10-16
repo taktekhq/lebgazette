@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"golang.org/x/image/draw"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,16 +108,24 @@ func (a *app) saderOCRText(r SaderRow, model string) ([]cropRes, error) {
 		if err != nil {
 			return res, err
 		}
-		gem, _, err := geminiRead(cs, model)
+		var gem, gem2 map[string]string
+		var err2 error
+		var wg2 sync.WaitGroup
+		if a.model2 != "" {
+			wg2.Add(1)
+			go func() { // the two readers run side by side
+				defer wg2.Done()
+				gem2, err2 = readColumns(cs, a.model2)
+			}()
+		}
+		gem, err = readColumns(cs, model)
+		wg2.Wait()
 		if err != nil {
 			return res, fmt.Errorf("page %d: %v", i+1, err)
 		}
-		var gem2 map[string]string
-		if a.model2 != "" {
-			if gem2, _, err = geminiRead(cs, a.model2); err != nil {
-				fmt.Fprintf(os.Stderr, "second reader %d page %d: %v\n", r.ID, i+1, err)
-				gem2 = nil
-			}
+		if err2 != nil {
+			fmt.Fprintf(os.Stderr, "second reader %d page %d: %v\n", r.ID, i+1, err2)
+			gem2 = nil
 		}
 		for ci, c := range cs {
 			base := strings.TrimSuffix(c, ".png")
@@ -138,4 +151,175 @@ func (a *app) saderOCRText(r SaderRow, model string) ([]cropRes, error) {
 	}
 	os.WriteFile(filepath.Join(out, "done"), []byte(model+"\n"), 0o644)
 	return res, nil
+}
+
+// headerStrip crops the running header band of a page image (full width) and
+// upscales it 2x.
+func headerStrip(pagePath, outPath string) (string, error) {
+	f, err := os.Open(pagePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	src, _, err := image.Decode(f)
+	if err != nil {
+		return "", err
+	}
+	b := src.Bounds()
+	y0, y1 := headerBand(src)
+	r := image.Rect(b.Min.X, b.Min.Y+y0, b.Max.X, b.Min.Y+y1)
+	dst := image.NewRGBA(image.Rect(0, 0, r.Dx()*2, r.Dy()*2))
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, r, draw.Over, nil)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, dst); err != nil {
+		return "", err
+	}
+	return outPath, os.WriteFile(outPath, buf.Bytes(), 0o644)
+}
+
+// readColumns reads the crops in one call; if the model's output filter cuts it
+// off (long, well-known texts: conventions, loan agreements), it reads each crop in
+// short slices instead, one call per slice, side by side.
+func readColumns(all []string, model string) (map[string]string, error) {
+	res := map[string]string{}
+	var cs []string
+	for _, c := range all {
+		if blankImage(c) { // an empty column (end of a text): nothing to read
+			res[filepath.Base(c)] = ""
+		} else {
+			cs = append(cs, c)
+		}
+	}
+	if len(cs) == 0 {
+		return res, nil
+	}
+	if r, _, err := geminiRead(cs, model); err == nil {
+		for k, v := range r {
+			res[k] = v
+		}
+		return res, nil
+	}
+	for _, c := range cs {
+		slices, err := sliceCrop(c, 520)
+		if err != nil {
+			return nil, err
+		}
+		parts := make([]string, len(slices))
+		errs := make([]error, len(slices))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 4)
+		for i, sl := range slices {
+			wg.Add(1)
+			go func(i int, sl string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				if blankImage(sl) {
+					return
+				}
+				r, _, err := geminiRead([]string{sl}, model)
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				parts[i] = r[filepath.Base(sl)]
+			}(i, sl)
+		}
+		wg.Wait()
+		for i := range errs {
+			if errs[i] != nil {
+				return nil, fmt.Errorf("slice %d of %s: %v", i+1, filepath.Base(c), errs[i])
+			}
+		}
+		res[filepath.Base(c)] = strings.Join(parts, "\n")
+		for _, sl := range slices {
+			os.Remove(sl)
+		}
+	}
+	return res, nil
+}
+
+// sliceCrop cuts a column image into slices of about maxW-wide-proportional height,
+// always at a blank row between lines, so no line is split.
+func sliceCrop(path string, targetH int) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	src, _, err := image.Decode(f)
+	if err != nil {
+		return nil, err
+	}
+	b := src.Bounds()
+	W, H := b.Dx(), b.Dy()
+	targetH = targetH * W / 600 // keep the same line count per slice for any resolution
+	ink := make([]int, H)
+	for y := 0; y < H; y++ {
+		for x := 0; x < W; x += 2 {
+			r, g, bl, _ := src.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			if (r+g+bl)/3 < 0x8000 {
+				ink[y]++
+			}
+		}
+	}
+	var cuts []int
+	y := 0
+	for y+targetH < H {
+		want := y + targetH
+		best, bestInk := want, 1<<30
+		for k := want - targetH/4; k <= want+targetH/4 && k < H; k++ {
+			if ink[k] < bestInk {
+				best, bestInk = k, ink[k]
+			}
+		}
+		cuts = append(cuts, best)
+		y = best
+	}
+	cuts = append(cuts, H)
+	var out []string
+	prev := 0
+	for i, c := range cuts {
+		r := image.Rect(b.Min.X, b.Min.Y+prev, b.Max.X, b.Min.Y+c)
+		dst := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
+		draw.Draw(dst, dst.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+		draw.Draw(dst, dst.Bounds(), src, r.Min, draw.Over)
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, dst); err != nil {
+			return nil, err
+		}
+		p := strings.TrimSuffix(path, ".png") + fmt.Sprintf(".s%02d.png", i+1)
+		if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+		prev = c
+	}
+	return out, nil
+}
+
+// blankImage reports an image with almost no ink (under 0.3% dark pixels).
+func blankImage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	src, _, err := image.Decode(f)
+	if err != nil {
+		return false
+	}
+	b := src.Bounds()
+	n, tot := 0, 0
+	for y := b.Min.Y; y < b.Max.Y; y += 2 {
+		for x := b.Min.X; x < b.Max.X; x += 2 {
+			r, g, bl, _ := src.At(x, y).RGBA()
+			tot++
+			if (r+g+bl)/3 < 0x8000 {
+				n++
+			}
+		}
+	}
+	return tot > 0 && n*1000 < tot*3
 }
