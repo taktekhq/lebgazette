@@ -1,0 +1,8 @@
+# What pcm-daily.sh fetches, in order, one phase after the other.
+# years   kinds (title starts with; - = all)   extra lebgazette flags
+# 1. Laws and decrees of the years the Lebanese University archive lacks.
+2026,2025 قانون,مرسوم
+# 2. Everything else in Part One of those years (decisions, circulars, Constitutional Council).
+2026,2025 -
+# 3. Older years, all of Part One. They overlap the UL archive: that overlap is the test set.
+2024,2023,2022 -

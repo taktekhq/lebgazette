@@ -1,0 +1,10 @@
+[Unit]
+Description=lebgazette pcm-daily: fetch the day's share of the free Gazette on pcm.gov.lb
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/taktekhq/lebgazette-data
+# Optional: PCM_NOTIFY and budget overrides; never ~/.profile.
+EnvironmentFile=-%h/.config/lebgazette/env
+ExecStart=%h/taktekhq/lebgazette/deploy/pcm-daily.sh %h/taktekhq/lebgazette-data
+TimeoutStartSec=6h

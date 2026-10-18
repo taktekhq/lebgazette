@@ -1,0 +1,10 @@
+[Unit]
+Description=lebgazette pcm-daily once a day, 03:17 Beirut
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 Asia/Beirut
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

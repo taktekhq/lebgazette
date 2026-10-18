@@ -64,7 +64,8 @@ func main() {
 	dpi := fs.Int("dpi", 120, "sader-bundle: resolution of the page images")
 	ids := fs.String("ids", "", "sader-ocr: read these SaderLex ids first, in this order; the rest follow from shortest to longest")
 	skipF := fs.String("skip", "", "sader-ocr: TSV (kind, number, year) of texts to leave out, e.g. what the Lebanese University already has")
-	limit := fs.Int("limit", 0, "stop after this many network fetches (0 = no limit)")
+	refresh := fs.Bool("refresh", false, "discover: fetch the landing page and the two newest year listings again, to find new issues")
+	limit := fs.Int("limit", 0,"stop after this many network fetches (0 = no limit)")
 	fs.Parse(os.Args[2:])
 	a := &app{f: NewFetcher(*ua, *gap, *data), base: strings.TrimRight(*base, "/"), data: *data, part2: *part2, maxSpan: *maxSpan}
 	for _, k := range strings.Split(*kinds, ",") {
@@ -76,7 +77,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "discover":
-		err = a.discover(ys)
+		err = a.discover(ys, *refresh)
 	case "texts":
 		err = a.texts(ys, *limit)
 	case "images":
@@ -161,7 +162,12 @@ func (a *app) page(id int, kind string) ([]byte, error) {
 
 // discover reads the landing page, every year listing, and one issue page per
 // year (its side menu lists every issue of the year, supplements included).
-func (a *app) discover(ys []int) error {
+// With refresh, the landing page and the two newest year listings are fetched
+// again, so new issues (and a new year in January) show up; older years stay cached.
+func (a *app) discover(ys []int, refresh bool) error {
+	if refresh {
+		os.Remove(a.f.path("landing.html"))
+	}
 	b, err := a.f.Get(a.base+"/arabic/landing.aspx?pageid=9", "landing.html")
 	if err != nil {
 		return err
@@ -172,6 +178,11 @@ func (a *app) discover(ys []int) error {
 		ids = append(ids, id)
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(ids)))
+	if refresh {
+		for _, id := range ids[:min(2, len(ids))] {
+			os.Remove(a.f.path(fmt.Sprintf("year/%d.html", id)))
+		}
+	}
 	all := map[int]Issue{}
 	for _, id := range ids {
 		lb, err := a.page(id, "year")
